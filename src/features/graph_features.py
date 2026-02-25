@@ -5,8 +5,8 @@ Extracts numerical feature vectors from an ASTGraph for use
 as input to the neural de-obfuscation model.
 
 Features extracted:
-  - Adjacency matrix (sparse)
-  - Graph Laplacian matrix
+  - Adjacency matrix (sparse COO/CSR via SciPy)
+  - Graph Laplacian matrix (sparse)
   - Spectral features (eigenvalues of the Laplacian)
   - Betti numbers (connected components, cycles)
   - Node type distribution vector
@@ -18,6 +18,9 @@ from dataclasses import dataclass
 
 import torch
 import numpy as np
+from scipy.sparse import coo_matrix, eye as speye
+from scipy.sparse.csgraph import laplacian as sparse_laplacian
+from scipy.sparse.linalg import eigsh
 
 from src.parser.ast_parser import ASTGraph, NUM_NODE_TYPES
 
@@ -77,42 +80,56 @@ class GraphFeatureExtractor:
         if n == 0:
             return self._empty_features()
 
-        # ── Build adjacency matrix (undirected) ──
-        adj = torch.zeros(n, n)
-        for u, v in graph.edges:
-            adj[u, v] = 1.0
-            adj[v, u] = 1.0
-
-        # ── Build degree matrix ──
-        degree = torch.diag(adj.sum(dim=1))
-
-        # ── Graph Laplacian: L = D - A ──
-        laplacian = degree - adj
+        # ── Build sparse adjacency matrix (undirected) ──
+        if graph.edges:
+            rows, cols = zip(*graph.edges)
+            # Make undirected: add both directions
+            rows = list(rows) + list(cols)
+            cols = list(cols) + list(rows[:len(graph.edges)])
+            data = [1.0] * len(rows)
+            adj_sparse = coo_matrix((data, (rows, cols)), shape=(n, n)).tocsr()
+        else:
+            adj_sparse = coo_matrix((n, n)).tocsr()
 
         # ── Spectral decomposition ──
-        eigenvalues = torch.linalg.eigvalsh(
-            laplacian + torch.eye(n) * 1e-6  # Regularize for numerical stability
-        )
+        # Use sparse eigsh for large graphs, dense fallback for small ones
+        if n >= 50:
+            # Sparse path: compute Laplacian and top-k eigenvalues
+            lap = sparse_laplacian(adj_sparse, normed=False)
+            # eigsh needs k < n; request smallest eigenvalues (shift-invert)
+            k = min(self.num_eigenvalues, n - 1)
+            try:
+                eigs = eigsh(lap, k=k, which='SM', return_eigenvectors=False)
+                eigenvalues_np = np.sort(eigs)
+            except Exception:
+                # Fallback to dense if sparse solver fails
+                lap_dense = lap.toarray()
+                eigenvalues_np = np.sort(np.linalg.eigvalsh(lap_dense))[:k]
+        else:
+            # Dense path for small graphs (sparse solvers less stable)
+            adj_dense = adj_sparse.toarray()
+            degree = np.diag(adj_dense.sum(axis=1))
+            lap_dense = degree - adj_dense + np.eye(n) * 1e-6
+            all_eigs = np.sort(np.linalg.eigvalsh(lap_dense))
+            k = min(self.num_eigenvalues, n)
+            eigenvalues_np = all_eigs[:k]
 
-        # Sort and take top-k
-        eigenvalues_sorted = eigenvalues.sort().values
-        k = min(self.num_eigenvalues, n)
-        top_eigenvalues = eigenvalues_sorted[:k]
+        top_eigenvalues = torch.from_numpy(eigenvalues_np.astype(np.float32))
 
         # Pad to fixed size if needed
-        if k < self.num_eigenvalues:
-            padding = torch.zeros(self.num_eigenvalues - k)
+        if len(top_eigenvalues) < self.num_eigenvalues:
+            padding = torch.zeros(self.num_eigenvalues - len(top_eigenvalues))
             top_eigenvalues = torch.cat([top_eigenvalues, padding])
+
+        # ── Betti numbers (topological features) ──
+        # Betti-0: number of connected components
+        #   = number of near-zero eigenvalues (computed BEFORE normalization)
+        betti_0 = float((top_eigenvalues.abs() < 1e-4).sum())
 
         # Normalize eigenvalues
         max_eig = top_eigenvalues.abs().max()
         if max_eig > 0:
             top_eigenvalues = top_eigenvalues / max_eig
-
-        # ── Betti numbers (topological features) ──
-        # Betti-0: number of connected components
-        #   = number of zero eigenvalues in the Laplacian
-        betti_0 = float((eigenvalues_sorted.abs() < 1e-4).sum())
 
         # Betti-1: approximate number of independent cycles
         #   = edges - nodes + connected_components (Euler characteristic)

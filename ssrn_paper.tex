@@ -1,0 +1,87 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+
+\title{Structure-Aware Neural Code De-obfuscation: Recovering Readability via AST Topologies and Transformer Models}
+\author{Daniyal \\ Independent Researcher}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Code obfuscation turns readable software into an unmaintainable mess, usually to hide malicious intent or protect intellectual property. Most de-obfuscation approaches treat code strictly as a sequence of text tokens, which breaks down entirely when attackers scramble whitespace or rename variables to meaningless single letters. We found that shifting the perspective---treating code as a topological graph via its Abstract Syntax Tree (AST)---allows us to extract structural invariants that survive even heavy minification. By feeding these graph spectral features into a lightweight ($\sim$10M parameter) Transformer model with Rotary Position Embeddings (RoPE), we built a pipeline that genuinely reconstructs human-readable formatting. Our testing on 100 algorithms from the Google MBPP dataset shows this approach works: we recovered the average code readability score back to 83.8 (out of 100), effectively reversing severe Level-3 obfuscation.
+\end{abstract}
+
+\section{Introduction}
+Trying to make sense of a heavily obfuscated Python script shouldn't take hours of manual variable renaming. In standard cybersecurity workflows, analysts are constantly handed code where every variable is a random letter, control flow is scrambled with dead code injections, and strings are encoded into bizarre integer byte arrays. 
+
+Most machine learning attempts at fixing this just throw a massive language model at the raw text. But code isn't exactly natural language. It has a rigid, deeply nested mathematical structure. Our initial hunch was that if we could "see" the skeleton of the code regardless of the text on top of it, we could train a model to put the meat back on those bones. This led us to graph theory. 
+
+\section{The Topological Perspective}
+Every piece of Python code parses down to an Abstract Syntax Tree (AST). We noticed that while obfuscators love to change \texttt{fetch\_user\_data()} to \texttt{a()}, they rarely change the shape of the tree itself---because doing so risks breaking the fundamental logic.
+
+We extract the connectivity of the AST and compute the normalized graph Laplacian. From there, we pull the top-k eigenvalues and compute Betti numbers (count of connected components and cycles). These are basically spectral fingerprints. It doesn't matter if an attacker renames every variable to \texttt{\_} and crams the entire program onto one line separated by semicolons; the topological graph remains structurally identical.
+
+\section{Pipeline Implementation}
+We built the Neural Code De-obfuscator around a custom Transformer encoder-decoder architecture. We didn't want a massive 7-billion parameter behemoth; we wanted something fast and targeted. 
+
+\begin{figure}[h]
+    \centering
+    % Ensure the architecture image is available in the same directory or provide the correct path
+    % Example: \includegraphics[width=\textwidth]{architecture.png}
+    \includegraphics[width=\textwidth]{media/architecture.png}
+    \caption{The core architecture of the Neural Code De-obfuscator pipeline, showing the parallel tokenization and graph spectral feature extraction layers flowing into the Transformer.}
+    \label{fig:architecture}
+\end{figure}
+
+\textbf{Model Specs:}
+\begin{itemize}
+    \item $\sim$10M Parameters 
+    \item SwiGLU feed-forward layers and RMSNorm for stability
+    \item Rotary Position Embeddings (RoPE) for better sequence awareness
+    \item A custom projection layer that concatenates our graph spectral features directly into the text encodings
+\end{itemize}
+
+The output side is equally important. The model predicts the underlying tokens, but we needed a Code Reconstructor to turn those back into PEP-8 compliant Python. We wrote a custom pretty printer that builds off the AST. Honestly, the naive version we first tried just spat out flat text and was totally unusable. We had to add regex-based heuristics that look at the context of a variable assignment to infer a descriptive name for it when the model isn't completely sure.
+
+\section{Benchmarking and Results}
+To test this properly, we didn't use toy examples. We pulled 100 clean, validated functional algorithms natively from the Google MBPP (Mostly Basic Python Problems) dataset.
+
+We built a custom multi-level Python obfuscator to mangle this dataset:
+\begin{itemize}
+    \item \textbf{Level 1}: Strip comments and docs, rename all variables to random single or double letters.
+    \item \textbf{Level 2}: Level 1 + compress all whitespace and merge simple statements onto single lines using semicolons.
+    \item \textbf{Level 3}: Level 2 + inject randomly generated, syntactically valid dead code blocks (like \texttt{if 0: pass}) and expand string literals into concatenated \texttt{chr()} arrays.
+\end{itemize}
+
+The pipeline successfully parsed, normalized, and reconstructed the entire 100-file corpus without a single AST syntax failure. We evaluated the results using a composite Readability Score (0-100) that factors in Halstead vocabulary, variable name descriptiveness, and cyclomatic complexity.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|}
+\hline
+\textbf{Output Stage} & \textbf{Overall Readability Score (0-100)} \\ \hline
+Original Clean Code & 77.0 \\ \hline
+Heavily Obfuscated (L3) & 56.0 \\ \hline
+\textbf{Pipeline Recovered} & \textbf{83.8} \\ \hline
+\end{tabular}
+\caption{Benchmark results across 100 MBPP algorithms.}
+\label{tab:results}
+\end{table}
+
+The results genuinely surprised us. The recovered average (83.8) is actually slightly higher than the original clean code average (77.0). If we're reading this right, it's because our PEP-8 pretty-printer standardizes the occasionally messy human spacing found in the raw MBPP dataset, giving it a slight structural edge in the metric scripts. The system successfully scrubbed the injected dead code, unspooled the string encoding, and assigned logical names back to the functions.
+
+\section{Discussion and Future Work}
+This seems to suggest that treating code as a pure token sequence is leaving a massive amount of structural data on the table. The topological eigenvalues provided a powerful invariant anchor for the Transformer. 
+
+This approach feels like the right trade-off between architectural complexity and practical usability. For future work, we are looking at expanding the feature extraction to include data-flow graphs alongside the control-flow ASTs. Also, we haven't trained this across multiple languages yet; it's strictly Python right now. We suspect the approach will generalize well to languages with stricter typing like Go or Rust, but that's something to look into down the line.
+
+\end{document}

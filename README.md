@@ -57,8 +57,9 @@ These features are **obfuscation-invariant** — renaming variables from `calcul
 ## 📦 Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/neural-deobfuscator.git
-cd neural-deobfuscator
+git clone https://github.com/SoDonik/neural-code-deobfuscator.git
+cd neural-code-deobfuscator
+
 pip install -r requirements.txt
 ```
 
@@ -122,6 +123,23 @@ Run benchmarks:
 python benchmarks/run_benchmarks.py
 ```
 
+## 🏋️ Training
+
+Train the Transformer model on the MBPP dataset:
+
+```bash
+# Fetch 100 clean functions from Google MBPP dataset
+python benchmarks/fetch_dataset.py
+
+# Train for 50 epochs (generates obfuscated pairs on-the-fly)
+python -m src.train --data-dir benchmarks/data/clean --epochs 50
+
+# Resume from a checkpoint
+python -m src.train --resume checkpoints/best_model.pt --epochs 100
+```
+
+Training supports CUDA, MPS (Apple Silicon), and CPU. Checkpoints are saved every 5 epochs + best model.
+
 ## 🧪 Testing
 
 ```bash
@@ -134,15 +152,17 @@ python -m pytest tests/ -v
 neural-deobfuscator/
 ├── src/
 │   ├── parser/          # Python AST → graph representation
-│   ├── features/        # Spectral feature extraction (Laplacian, Betti)
+│   ├── features/        # Spectral feature extraction (sparse Laplacian, Betti)
 │   ├── model/           # Transformer encoder-decoder (~10M params)
 │   ├── reconstructor/   # AST → clean Python + name inference
+│   ├── train.py         # Training pipeline (dataset, loop, checkpointing)
 │   └── cli.py           # Command-line interface
 ├── benchmarks/
 │   ├── obfuscate.py     # 3-level obfuscation engine
 │   ├── metrics.py       # Readability metrics (Halstead, cyclomatic)
-│   └── data/            # Clean & obfuscated test functions
-├── tests/               # Unit tests
+│   ├── fetch_dataset.py # MBPP dataset downloader
+│   └── data/            # 100 clean + 300 obfuscated test functions
+├── tests/               # Unit tests (23 tests)
 ├── requirements.txt
 └── LICENSE (MIT)
 ```

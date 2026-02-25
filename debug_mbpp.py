@@ -3,11 +3,6 @@ from benchmarks.obfuscate import Obfuscator
 from pathlib import Path
 
 obf = Obfuscator(level=3, seed=42)
-import ast
-from benchmarks.obfuscate import Obfuscator
-from pathlib import Path
-
-obf = Obfuscator(level=3, seed=42)
 for file_path in sorted(Path("benchmarks/data/clean").glob("*.py")):
     source = file_path.read_text()
     obfuscated = obf.obfuscate(source)
